@@ -325,7 +325,13 @@ var now = today();
 var ITEMS = [];
 
 // ---- Live data from the published Google Sheet (CSV) ----
-var SHEET_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vT54nwoUFFaJQ96EpAGJp66v3VekyAhC3TJ0M659yR2fY5WW3HXmSh1_A9yS6jdao7pbda4AlwbXD6l/pub?gid=0&single=true&output=csv";
+// Live endpoint first (no publish delay; needs "anyone with the link can view"),
+// then the "Publish to web" CSV, which Google caches for a few minutes.
+var SHEET_URLS = [
+  "https://docs.google.com/spreadsheets/d/1NjhPT-uEeEUyPx_Vtc0_VzPIifLllkLVdSoNDJlwDzg/gviz/tq?tqx=out:csv&gid=0",
+  "https://docs.google.com/spreadsheets/d/e/2PACX-1vT54nwoUFFaJQ96EpAGJp66v3VekyAhC3TJ0M659yR2fY5WW3HXmSh1_A9yS6jdao7pbda4AlwbXD6l/pub?gid=0&single=true&output=csv"
+];
+var REFRESH_MS = 2 * 60 * 1000;
 var CACHE_KEY = "academic-hub-sheet-v1";
 
 function parseCSV(text) {
@@ -436,23 +442,48 @@ function buildItems(links) {
 function setSource(msg) { var e = document.getElementById("src"); if (e) e.textContent = msg; }
 function clock(d) { return ("0" + d.getHours()).slice(-2) + ":" + ("0" + d.getMinutes()).slice(-2) + " น."; }
 
-function loadSheet() {
+function fetchCSV(url) {
   var ctrl = ("AbortController" in window) ? new AbortController() : null;
   var timer = ctrl ? setTimeout(function () { ctrl.abort(); }, 12000) : null;
-  fetch(SHEET_URL + "&_=" + Date.now(), { cache: "no-store", signal: ctrl ? ctrl.signal : undefined })
+  return fetch(url + "&_=" + Date.now(), { cache: "no-store", signal: ctrl ? ctrl.signal : undefined })
     .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.text(); })
     .then(function (text) {
+      if (timer) clearTimeout(timer);
+      if (/^\s*</.test(text)) throw new Error("not csv");   // sign-in page instead of data
       var links = sheetToLinks(parseCSV(text));
       if (!links.length) throw new Error("empty");
-      buildItems(links); render();
-      setSource("ข้อมูลจาก Google Sheet · โหลดเมื่อ " + clock(new Date()));
-      try { localStorage.setItem(CACHE_KEY, JSON.stringify({ t: Date.now(), links: links })); } catch (e) {}
-    })
-    .catch(function () {
-      setSource(cachedAt ? "โหลดชีตไม่ได้ ใช้ข้อมูลที่บันทึกไว้เมื่อ " + cachedAt : "โหลดชีตไม่ได้ ใช้ข้อมูลสำรองที่มากับแอป");
-    })
-    .then(function () { if (timer) clearTimeout(timer); });
+      return links;
+    }, function (err) { if (timer) clearTimeout(timer); throw err; });
 }
+
+var loading = false, lastLoad = 0;
+function loadSheet() {
+  if (loading) return;
+  loading = true; lastLoad = Date.now();
+  var i = 0;
+  (function next() {
+    if (i >= SHEET_URLS.length) {
+      loading = false;
+      setSource(cachedAt ? "โหลดชีตไม่ได้ ใช้ข้อมูลที่บันทึกไว้เมื่อ " + cachedAt : "โหลดชีตไม่ได้ ใช้ข้อมูลสำรองที่มากับแอป");
+      return;
+    }
+    fetchCSV(SHEET_URLS[i++]).then(function (links) {
+      loading = false;
+      buildItems(links); render();
+      var t = new Date();
+      cachedAt = t.getDate() + " " + MONTHS[t.getMonth()] + " " + (t.getFullYear() + 543) + " " + clock(t);
+      setSource("ข้อมูลจาก Google Sheet · โหลดเมื่อ " + clock(t));
+      try { localStorage.setItem(CACHE_KEY, JSON.stringify({ t: Date.now(), links: links })); } catch (e) {}
+    }, next);
+  })();
+}
+
+// Reload when the app comes back to the foreground and every few minutes while open.
+function refreshIfStale() { if (!document.hidden && Date.now() - lastLoad > 30000) loadSheet(); }
+document.addEventListener("visibilitychange", refreshIfStale);
+window.addEventListener("focus", refreshIfStale);
+window.addEventListener("online", loadSheet);
+setInterval(function () { if (!document.hidden) loadSheet(); }, REFRESH_MS);
 
 var cachedAt = "";
 function initialLinks() {
