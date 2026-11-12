@@ -235,7 +235,7 @@ footer { margin-top: 36px; font-size: 0.85rem; color: var(--muted); }
   <p class="group-note">ใช้ตรวจว่าครูกรอกข้อมูลครบหรือยัง (สำหรับงานวิชาการ)</p>
   <ul class="list" id="checkList"></ul>
 
-  <footer>ข้อมูลมาจาก Google Sheet "รวมลิงก์วิชาการ" สถานะเปิด/ปิดคำนวณจากวันที่ในชีตเทียบกับวันนี้</footer>
+  <footer><span id="src">กำลังโหลดข้อมูลจาก Google Sheet…</span><br>สถานะเปิด/ปิดคำนวณจากวันที่ในชีตเทียบกับวันนี้ รายการที่พ้นกำหนดปิดรับจะเปิดลิงก์ไม่ได้</footer>
 </div>
 
 <script>
@@ -246,7 +246,8 @@ var CAT = {
   grade: "ผลการเรียนและแก้ตัว",
   sup: "นิเทศและรายงาน",
   work: "ภาระงานและแผนการสอน",
-  cal: "ปฏิทินและตาราง"
+  cal: "ปฏิทินและตาราง",
+  other: "อื่น ๆ"
 };
 var LINKS = [
   { n: 1,  cat: "doc",   title: "แบบฟอร์มต่าง ๆ ของวิชาการ", url: "https://drive.google.com/drive/folders/1gYiMmlHE4_sIEtaFTY7i31Yrnm2Bs6Om?usp=sharing" },
@@ -321,9 +322,151 @@ function dateParts(it) {
 }
 
 var now = today();
-var ITEMS = LINKS.map(function (it) {
-  return { it: it, st: statusOf(it, now), type: typeOf(it.url), catName: CAT[it.cat] };
+var ITEMS = [];
+
+// ---- Live data from the published Google Sheet (CSV) ----
+var SHEET_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vT54nwoUFFaJQ96EpAGJp66v3VekyAhC3TJ0M659yR2fY5WW3HXmSh1_A9yS6jdao7pbda4AlwbXD6l/pub?gid=0&single=true&output=csv";
+var CACHE_KEY = "academic-hub-sheet-v1";
+
+function parseCSV(text) {
+  var rows = [], row = [], cell = "", q = false, i, c;
+  text = text.replace(/^﻿/, "");
+  for (i = 0; i < text.length; i++) {
+    c = text[i];
+    if (q) {
+      if (c === '"') { if (text[i + 1] === '"') { cell += '"'; i++; } else q = false; }
+      else cell += c;
+    } else if (c === '"') q = true;
+    else if (c === ",") { row.push(cell); cell = ""; }
+    else if (c === "\n" || c === "\r") {
+      if (c === "\r" && text[i + 1] === "\n") i++;
+      row.push(cell); cell = ""; rows.push(row); row = [];
+    } else cell += c;
+  }
+  if (cell !== "" || row.length) { row.push(cell); rows.push(row); }
+  return rows;
+}
+
+var TH_MONTH_LIST = [
+  ["มกราคม","ม.ค.","มค"], ["กุมภาพันธ์","ก.พ.","กพ"], ["มีนาคม","มี.ค.","มีค"], ["เมษายน","เม.ย.","เมย"],
+  ["พฤษภาคม","พ.ค.","พค"], ["มิถุนายน","มิ.ย.","มิย"], ["กรกฎาคม","ก.ค.","กค"], ["สิงหาคม","ส.ค.","สค"],
+  ["กันยายน","ก.ย.","กย"], ["ตุลาคม","ต.ค.","ตค"], ["พฤศจิกายน","พ.ย.","พย"], ["ธันวาคม","ธ.ค.","ธค"]
+];
+var TH_MONTH_MAP = {}, TH_MONTH_ALT = [];
+TH_MONTH_LIST.forEach(function (names, idx) {
+  names.forEach(function (n) { TH_MONTH_MAP[n] = idx; TH_MONTH_ALT.push(n.replace(/\./g, "\\.")); });
 });
+TH_MONTH_ALT.sort(function (a, b) { return b.length - a.length; });
+var TH_DATE_RE = new RegExp("(\\d{1,2})\\s*(" + TH_MONTH_ALT.join("|") + ")\\s*(\\d{4})?", "g");
+
+function iso(y, m, d) {
+  if (y > 2400) y -= 543;
+  var dt = new Date(y, m, d);
+  if (dt.getFullYear() !== y || dt.getMonth() !== m || dt.getDate() !== d) return null;
+  return y + "-" + ("0" + (m + 1)).slice(-2) + "-" + ("0" + d).slice(-2);
+}
+
+function parseDates(str) {
+  var out = [], m;
+  str = String(str || "").replace(/\s+/g, " ");
+  TH_DATE_RE.lastIndex = 0;
+  while ((m = TH_DATE_RE.exec(str))) out.push({ d: +m[1], m: TH_MONTH_MAP[m[2]], y: m[3] ? +m[3] : null });
+  var re2 = /(\d{1,2})\/(\d{1,2})\/(\d{4})/g;
+  while ((m = re2.exec(str))) out.push({ d: +m[1], m: +m[2] - 1, y: +m[3] });
+  for (var i = out.length - 2; i >= 0; i--) if (out[i].y == null) out[i].y = out[i + 1].y;
+  var thisYear = new Date().getFullYear();
+  return out.map(function (x) { return iso(x.y == null ? thisYear : x.y, x.m, x.d); }).filter(Boolean);
+}
+
+var CAT_RULES = [
+  ["grade", /แก้ตัว|เรียนซ้ำ|มส|ผลการเรียน|0 ร|แนวโน้ม|ร มผ/],
+  ["sup",   /นิเทศ|รายงาน|วิจัย|สื่อ/],
+  ["work",  /ภาระงาน|ประมวล|แผนการ/],
+  ["cal",   /ปฏิทิน|ตาราง/],
+  ["doc",   /แบบฟอร์ม|แบบบันทึก|ชุมนุม/]
+];
+function inferCat(title) {
+  for (var i = 0; i < CAT_RULES.length; i++) if (CAT_RULES[i][1].test(title)) return CAT_RULES[i][0];
+  return "other";
+}
+function catKey(label) {
+  if (!label) return null;
+  label = label.trim();
+  for (var k in CAT) if (CAT[k] === label) return k;
+  var key = "x_" + label;
+  CAT[key] = label;
+  return key;
+}
+
+function sheetToLinks(rows) {
+  var head = (rows[0] || []).map(function (h) { return String(h).trim(); });
+  function col(name, fallback) { var i = head.indexOf(name); return i >= 0 ? i : fallback; }
+  var cNo = col("ที่", 0), cTitle = col("รายการ", 1), cUrl = col("ลิงก์", 2),
+      cStart = col("เริ่มรับข้อมูล", 3), cEnd = col("ปิดรับข้อมูล", 4), cNote = col("หมายเหตุ", 5), cCat = col("หมวด", -1);
+  var out = [];
+  rows.slice(1).forEach(function (r) {
+    var url = String(r[cUrl] || "").trim();
+    var title = String(r[cTitle] || "").replace(/\s+/g, " ").replace(/["“”]/g, "").trim();
+    if (!title || !/^https?:\/\//i.test(url)) return;   // skip blank rows and any non-web link
+    var note = String(r[cNote] || "").replace(/\s+/g, " ").trim();
+    // A first-time password must not be shown on the page.
+    var pw = title.search(/รหัส/);
+    if (pw > 0) {
+      title = title.slice(0, pw).trim();
+      note = note || "เข้าใช้ครั้งแรกใช้รหัสเริ่มต้นตามประกาศของงานวิชาการ และให้เปลี่ยนรหัสทันทีหลังเข้าใช้";
+    }
+    var ds = parseDates(r[cStart]), de = parseDates(r[cEnd]);
+    var it = { n: String(r[cNo] || "").trim() || String(out.length + 1), title: title, url: url };
+    if (ds.length >= 2 && !de.length) { it.start = ds[0]; it.end = ds[1]; it.range = true; }
+    else { if (ds[0]) it.start = ds[0]; if (de[0]) it.end = de[0]; }
+    if (note) it.note = note;
+    it.cat = (cCat >= 0 && catKey(r[cCat])) || inferCat(title);
+    out.push(it);
+  });
+  return out;
+}
+
+function buildItems(links) {
+  now = today();
+  ITEMS = links.map(function (it) {
+    return { it: it, st: statusOf(it, now), type: typeOf(it.url), catName: CAT[it.cat] || CAT.other };
+  });
+}
+
+function setSource(msg) { var e = document.getElementById("src"); if (e) e.textContent = msg; }
+function clock(d) { return ("0" + d.getHours()).slice(-2) + ":" + ("0" + d.getMinutes()).slice(-2) + " น."; }
+
+function loadSheet() {
+  var ctrl = ("AbortController" in window) ? new AbortController() : null;
+  var timer = ctrl ? setTimeout(function () { ctrl.abort(); }, 12000) : null;
+  fetch(SHEET_URL + "&_=" + Date.now(), { cache: "no-store", signal: ctrl ? ctrl.signal : undefined })
+    .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.text(); })
+    .then(function (text) {
+      var links = sheetToLinks(parseCSV(text));
+      if (!links.length) throw new Error("empty");
+      buildItems(links); render();
+      setSource("ข้อมูลจาก Google Sheet · โหลดเมื่อ " + clock(new Date()));
+      try { localStorage.setItem(CACHE_KEY, JSON.stringify({ t: Date.now(), links: links })); } catch (e) {}
+    })
+    .catch(function () {
+      setSource(cachedAt ? "โหลดชีตไม่ได้ ใช้ข้อมูลที่บันทึกไว้เมื่อ " + cachedAt : "โหลดชีตไม่ได้ ใช้ข้อมูลสำรองที่มากับแอป");
+    })
+    .then(function () { if (timer) clearTimeout(timer); });
+}
+
+var cachedAt = "";
+function initialLinks() {
+  try {
+    var c = JSON.parse(localStorage.getItem(CACHE_KEY) || "null");
+    if (c && c.links && c.links.length) {
+      var t = new Date(c.t);
+      cachedAt = t.getDate() + " " + MONTHS[t.getMonth()] + " " + (t.getFullYear() + 543) + " " + clock(t);
+      c.links.forEach(function (l) { if (!CAT[l.cat]) CAT[l.cat] = l.cat.replace(/^x_/, ""); });
+      return c.links;
+    }
+  } catch (e) {}
+  return LINKS;
+}
 
 var state = { q: "", status: "all", cat: "all" };
 
@@ -443,7 +586,7 @@ function renderChips() {
   var cc = document.getElementById("catChips");
   cc.textContent = "";
   cc.appendChild(chip("ทุกหมวด", null, state.cat === "all", function () { state.cat = "all"; render(); }));
-  Object.keys(CAT).forEach(function (k) {
+  Object.keys(CAT).filter(function (k) { return ITEMS.some(function (o) { return o.it.cat === k; }); }).forEach(function (k) {
     cc.appendChild(chip(CAT[k], null, state.cat === k, function () { state.cat = k; render(); }));
   });
 }
@@ -459,8 +602,10 @@ document.getElementById("asof").textContent = "รวมลิงก์งาน
   now.getFullYear() + "-" + (now.getMonth() + 1) + "-" + now.getDate()
 );
 document.getElementById("q").addEventListener("input", function (e) { state.q = e.target.value.trim(); render(); });
+buildItems(initialLinks());
 render();
 renderChecks();
+loadSheet();
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", function () {
     try { navigator.serviceWorker.register("sw.js").catch(function () {}); } catch (e) {}
