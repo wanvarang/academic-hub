@@ -1,6 +1,6 @@
 // Cache-first for the app shell, network-first for everything else (fonts) with cache fallback.
 // Bump VERSION whenever index.html changes so installed apps refresh.
-var VERSION = "v13";
+var VERSION = "v14";
 var SHELL = ["./", "./index.html", "./manifest.webmanifest", "./icon-192.png", "./icon-512.png"];
 
 self.addEventListener("install", function (e) {
