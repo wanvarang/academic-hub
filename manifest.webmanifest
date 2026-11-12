@@ -1,6 +1,6 @@
 {
-  "name": "Academic Hub",
-  "short_name": "Academic Hub",
+  "name": "Vichakarn รวมลิงก์งานวิชาการ",
+  "short_name": "Vichakarn",
   "description": "รวมลิงก์ระบบ แบบฟอร์ม และปฏิทินของงานวิชาการ โรงเรียนบ้านหมี่วิทยา",
   "lang": "th",
   "start_url": "./index.html",
